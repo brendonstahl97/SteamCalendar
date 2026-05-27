@@ -22,5 +22,22 @@
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-geist-sans), Arial, Helvetica, sans-serif;
+}
+
+.wishlist-item-enter {
+  opacity: 0;
+  transform: translateY(8px) scale(0.995);
+  animation: wishlistItemIn 420ms ease-out forwards;
+}
+
+@keyframes wishlistItemIn {
+  0% {
+    opacity: 0;
+    transform: translateY(8px) scale(0.995);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
 }
