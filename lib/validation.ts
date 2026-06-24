@@ -1,8 +1,13 @@
 import { MAX_GAMES_PER_REQUEST } from "@/lib/constants";
 
 const STEAM_STORE_URL = /^https:\/\/store\.steampowered\.com\/app\/\d+$/;
+const HTTPS_URL = /^https:\/\//;
 const MAX_NAME_LENGTH = 500;
 const MAX_RELEASE_TEXT_LENGTH = 200;
+
+export function isValidHttpsUrl(value: string): boolean {
+  return HTTPS_URL.test(value);
+}
 
 export function isValidAppId(value: unknown): value is number {
   return (
@@ -50,8 +55,17 @@ export function isValidWishlistGameShape(item: unknown): boolean {
   if (game.releaseDateUnix !== undefined && typeof game.releaseDateUnix !== "number") {
     return false;
   }
-  if (game.capsuleUrl !== undefined && typeof game.capsuleUrl !== "string") {
-    return false;
+  if (game.capsuleUrl !== undefined) {
+    if (typeof game.capsuleUrl !== "string" || !isValidHttpsUrl(game.capsuleUrl)) {
+      return false;
+    }
   }
   return true;
+}
+
+export function isWishlistGameArray(value: unknown): value is import("@/lib/integrations/types").WishlistGame[] {
+  if (!Array.isArray(value) || value.length > MAX_GAMES_PER_REQUEST) {
+    return false;
+  }
+  return value.every(isValidWishlistGameShape);
 }
