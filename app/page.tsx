@@ -1,16 +1,11 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-
-type WishlistGame = {
-  appId: number;
-  name: string;
-  releaseDateText: string;
-  releaseDate?: string;
-  releaseDateUnix?: number;
-  capsuleUrl?: string;
-  storeUrl: string;
-};
+import {
+  readWishlistCache,
+  writeWishlistCache,
+} from "@/lib/wishlist-client-cache";
+import type { WishlistGame } from "@/lib/integrations/types";
 
 type SessionStatus = {
   steamConnected: boolean;
@@ -56,6 +51,7 @@ export default function Home() {
   const hasBootstrapped = useRef(false);
   const streamRef = useRef<EventSource | null>(null);
   const authPopupRef = useRef<Window | null>(null);
+  const previousSteamIdRef = useRef<string | null>(null);
   const [status, setStatus] = useState<SessionStatus | null>(null);
   const [games, setGames] = useState<WishlistGame[]>([]);
   const [selected, setSelected] = useState<Record<number, boolean>>({});
@@ -75,6 +71,7 @@ export default function Home() {
   const [useIcs, setUseIcs] = useState(false);
   const [result, setResult] = useState<string>("");
   const [error, setError] = useState<string>("");
+  const [fetchedAt, setFetchedAt] = useState<number | null>(null);
 
   const closeStream = useCallback(() => {
     if (streamRef.current) {
@@ -83,7 +80,37 @@ export default function Home() {
     }
   }, []);
 
-  const loadGames = useCallback(async () => {
+  const hydrateWishlistFromCache = useCallback((steamId: string) => {
+    const cached = readWishlistCache(steamId);
+    if (!cached) {
+      return false;
+    }
+
+    setGames(cached.games);
+    setSelected(Object.fromEntries(cached.games.map((game) => [game.appId, true])));
+    setProgress(cached.progress);
+    setFetchedAt(cached.fetchedAt);
+    setLoadPhase("loaded");
+    setLoadingGames(false);
+    return true;
+  }, []);
+
+  const resetWishlistState = useCallback(() => {
+    setGames([]);
+    setSelected({});
+    setProgress({ total: 0, processed: 0, emitted: 0, failed: 0 });
+    setFetchedAt(null);
+    setLoadPhase("idle");
+    setLoadingGames(false);
+    setWarning("");
+  }, []);
+
+  const fetchWishlist = useCallback(() => {
+    const steamId = status?.steamId;
+    if (!steamId) {
+      return;
+    }
+
     setLoadingGames(true);
     setError("");
     setWarning("");
@@ -93,6 +120,7 @@ export default function Home() {
     setLoadPhase("connecting");
 
     closeStream();
+    const collected: WishlistGame[] = [];
     const source = new EventSource("/api/steam/wishlist/stream");
     streamRef.current = source;
 
@@ -102,6 +130,9 @@ export default function Home() {
 
     source.addEventListener("item", (event) => {
       const item = JSON.parse((event as MessageEvent).data) as WishlistGame;
+      if (!collected.some((game) => game.appId === item.appId)) {
+        collected.push(item);
+      }
       setGames((prev) => {
         const exists = prev.some((game) => game.appId === item.appId);
         if (exists) {
@@ -122,15 +153,25 @@ export default function Home() {
       const done = JSON.parse((event as MessageEvent).data) as StreamProgress & {
         message?: string;
       };
-      setProgress({
+      const finalProgress = {
         total: done.total ?? 0,
         processed: done.processed ?? 0,
         emitted: done.emitted ?? 0,
         failed: done.failed ?? 0,
-      });
+      };
+      setProgress(finalProgress);
       if ((done.failed ?? 0) > 0 && done.message) {
         setWarning(done.message);
       }
+      const fetchedAtMs = Date.now();
+      setFetchedAt(fetchedAtMs);
+      writeWishlistCache(steamId, {
+        version: 1,
+        steamId,
+        games: collected,
+        progress: finalProgress,
+        fetchedAt: fetchedAtMs,
+      });
       setLoadPhase("loaded");
       setLoadingGames(false);
       closeStream();
@@ -144,72 +185,53 @@ export default function Home() {
       } catch {
         // no-op
       }
-      // #region agent log
-      fetch("http://127.0.0.1:7540/ingest/1d6d0161-91f9-4885-a416-bb26b4b152ed", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "9f44b2" },
-        body: JSON.stringify({
-          sessionId: "9f44b2",
-          hypothesisId: "E",
-          location: "app/page.tsx:loadGames:error",
-          message: "wishlist-stream-error",
-          data: { message },
-          timestamp: Date.now(),
-        }),
-      }).catch(() => {});
-      // #endregion
       setError(message);
       setLoadPhase("error");
       setLoadingGames(false);
       closeStream();
     });
-  }, [closeStream]);
+  }, [closeStream, status?.steamId]);
 
-  const refreshSession = useCallback(async () => {
+  const applySessionStatus = useCallback(
+    (data: SessionStatus) => {
+      const nextSteamId = data.steamId;
+      const previousSteamId = previousSteamIdRef.current;
+
+      if (
+        previousSteamId &&
+        nextSteamId &&
+        previousSteamId !== nextSteamId
+      ) {
+        resetWishlistState();
+      }
+
+      if (!data.steamConnected) {
+        resetWishlistState();
+      }
+
+      previousSteamIdRef.current = nextSteamId;
+      setStatus(data);
+    },
+    [resetWishlistState],
+  );
+
+  const refreshSession = useCallback(async (): Promise<SessionStatus> => {
     const res = await fetch("/api/session", { cache: "no-store" });
     const data = (await res.json()) as SessionStatus;
-    // #region agent log
-    fetch("http://127.0.0.1:7540/ingest/1d6d0161-91f9-4885-a416-bb26b4b152ed", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "9f44b2" },
-      body: JSON.stringify({
-        sessionId: "9f44b2",
-        hypothesisId: "C",
-        location: "app/page.tsx:refreshSession",
-        message: "session-api-response",
-        data: {
-          ok: res.ok,
-          status: res.status,
-          steamConnected: data.steamConnected,
-          hasSteamId: Boolean(data.steamId),
-        },
-        timestamp: Date.now(),
-      }),
-    }).catch(() => {});
-    // #endregion
-    setStatus(data);
-    if (data.steamConnected) {
-      await loadGames();
+    applySessionStatus(data);
+    return data;
+  }, [applySessionStatus]);
+
+  const refreshSessionAndHydrate = useCallback(async () => {
+    const data = await refreshSession();
+    if (data.steamConnected && data.steamId) {
+      hydrateWishlistFromCache(data.steamId);
     }
-  }, [loadGames]);
+  }, [hydrateWishlistFromCache, refreshSession]);
 
   const openAuthPopup = useCallback((url: string) => {
     setError("");
     const popup = window.open(url, "swc-auth", AUTH_POPUP_FEATURES);
-    // #region agent log
-    fetch("http://127.0.0.1:7540/ingest/1d6d0161-91f9-4885-a416-bb26b4b152ed", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "9f44b2" },
-      body: JSON.stringify({
-        sessionId: "9f44b2",
-        hypothesisId: "D",
-        location: "app/page.tsx:openAuthPopup",
-        message: "popup-opened",
-        data: { url, popupBlocked: !popup },
-        timestamp: Date.now(),
-      }),
-    }).catch(() => {});
-    // #endregion
     if (!popup) {
       setError("Allow popups for this site to sign in.");
       return;
@@ -223,49 +245,13 @@ export default function Home() {
     }
     hasBootstrapped.current = true;
     const timer = window.setTimeout(() => {
-      void refreshSession();
+      void refreshSessionAndHydrate();
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [started, refreshSession]);
+  }, [started, refreshSessionAndHydrate]);
 
   useEffect(() => {
     function onAuthMessage(event: MessageEvent) {
-      const rejectReason =
-        event.origin !== window.location.origin
-          ? "origin-mismatch"
-          : authPopupRef.current && event.source !== authPopupRef.current
-            ? "source-mismatch"
-            : !isAuthCompleteMessage(event.data)
-              ? "invalid-payload"
-              : null;
-
-      // #region agent log
-      fetch("http://127.0.0.1:7540/ingest/1d6d0161-91f9-4885-a416-bb26b4b152ed", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "9f44b2" },
-        body: JSON.stringify({
-          sessionId: "9f44b2",
-          hypothesisId: "B",
-          location: "app/page.tsx:onAuthMessage",
-          message: rejectReason ? "message-rejected" : "message-accepted",
-          data: {
-            rejectReason,
-            eventOrigin: event.origin,
-            pageOrigin: window.location.origin,
-            hasPopupRef: Boolean(authPopupRef.current),
-            sourceMatchesPopup: authPopupRef.current
-              ? event.source === authPopupRef.current
-              : null,
-            payloadType:
-              event.data && typeof event.data === "object"
-                ? (event.data as { type?: string }).type
-                : typeof event.data,
-          },
-          timestamp: Date.now(),
-        }),
-      }).catch(() => {});
-      // #endregion
-
       if (event.origin !== window.location.origin) {
         return;
       }
@@ -280,7 +266,12 @@ export default function Home() {
 
       if (event.data.status === "connected") {
         setError("");
-        void refreshSession();
+        void (async () => {
+          const data = await refreshSession();
+          if (event.data.provider === "steam" && data.steamConnected && data.steamId) {
+            hydrateWishlistFromCache(data.steamId);
+          }
+        })();
         if (event.data.provider === "google") {
           setUseGoogle(true);
         }
@@ -293,7 +284,7 @@ export default function Home() {
 
     window.addEventListener("message", onAuthMessage);
     return () => window.removeEventListener("message", onAuthMessage);
-  }, [refreshSession]);
+  }, [hydrateWishlistFromCache, refreshSession]);
 
   useEffect(() => () => closeStream(), [closeStream]);
 
@@ -367,6 +358,17 @@ export default function Home() {
   const allSelected = games.length > 0 && selectedGames.length === games.length;
   const progressPercent =
     progress.total > 0 ? Math.min(100, Math.round((progress.processed / progress.total) * 100)) : 0;
+  const hasWishlistData =
+    games.length > 0 || loadPhase === "loaded" || fetchedAt !== null;
+  const fetchButtonLabel = hasWishlistData
+    ? "Re-fetch Wishlist Items"
+    : "Get Wishlist Items";
+  const isFetching =
+    loadingGames || loadPhase === "connecting" || loadPhase === "loading";
+  const lastFetchedLabel =
+    fetchedAt !== null
+      ? `Last fetched: ${new Date(fetchedAt).toLocaleString()}`
+      : null;
 
   return (
     <main className="relative min-h-screen bg-gradient-to-b from-slate-50 via-white to-blue-50">
@@ -420,7 +422,7 @@ export default function Home() {
               <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
                 <h2 className="text-lg font-semibold text-slate-900">Live loading status</h2>
                 <p className="mt-2 text-sm text-slate-600">
-                  {loadPhase === "idle" && "Waiting to load your wishlist."}
+                  {loadPhase === "idle" && "Click Get Wishlist Items to load your wishlist."}
                   {loadPhase === "connecting" && "Connecting to wishlist stream..."}
                   {loadPhase === "loading" &&
                     `Loading games: ${progress.processed}/${progress.total} processed`}
@@ -428,6 +430,19 @@ export default function Home() {
                     `Loaded ${games.length} eligible games. Ready to select.`}
                   {loadPhase === "error" && "Loading failed. See error below."}
                 </p>
+                {status?.steamConnected && (
+                  <button
+                    type="button"
+                    className={`${buttonBase} mt-4 border border-slate-300 bg-white text-slate-700 hover:bg-slate-50`}
+                    onClick={() => fetchWishlist()}
+                    disabled={isFetching}
+                  >
+                    {fetchButtonLabel}
+                  </button>
+                )}
+                {lastFetchedLabel && (
+                  <p className="mt-2 text-xs text-slate-500">{lastFetchedLabel}</p>
+                )}
                 <div className="mt-4 h-2 overflow-hidden rounded-full bg-slate-100">
                   <div
                     className="h-full bg-blue-500 transition-all duration-300"
@@ -472,7 +487,13 @@ export default function Home() {
                   </div>
                 )}
 
-                {!loadingGames && games.length === 0 && (
+                {!loadingGames && games.length === 0 && loadPhase === "idle" && (
+                  <p className="mt-4 text-sm text-slate-600">
+                    Fetch your wishlist using the button in the Live loading status card.
+                  </p>
+                )}
+
+                {!loadingGames && games.length === 0 && loadPhase === "loaded" && (
                   <p className="mt-4 text-sm text-slate-600">
                     No upcoming unreleased games were found yet.
                   </p>

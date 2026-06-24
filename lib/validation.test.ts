@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isAppIdArray, isValidAppId, isValidWishlistGameShape } from "@/lib/validation";
+import { isAppIdArray, isValidAppId, isValidWishlistGameShape, isWishlistGameArray } from "@/lib/validation";
 
 describe("validation", () => {
   it("accepts valid app ids", () => {
@@ -32,5 +32,19 @@ describe("validation", () => {
         storeUrl: "https://evil.example/app/1",
       }),
     ).toBe(false);
+  });
+
+  it("validates wishlist game arrays", () => {
+    const game = {
+      appId: 1,
+      name: "Game",
+      releaseDateText: "Feb 1, 2027",
+      storeUrl: "https://store.steampowered.com/app/1",
+    };
+    expect(isWishlistGameArray([game])).toBe(true);
+    expect(isWishlistGameArray([])).toBe(true);
+    expect(isWishlistGameArray([{ ...game, capsuleUrl: "http://insecure.example/img.jpg" }])).toBe(
+      false,
+    );
   });
 });
