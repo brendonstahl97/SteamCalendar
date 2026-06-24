@@ -144,6 +144,20 @@ export default function Home() {
       } catch {
         // no-op
       }
+      // #region agent log
+      fetch("http://127.0.0.1:7540/ingest/1d6d0161-91f9-4885-a416-bb26b4b152ed", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "9f44b2" },
+        body: JSON.stringify({
+          sessionId: "9f44b2",
+          hypothesisId: "E",
+          location: "app/page.tsx:loadGames:error",
+          message: "wishlist-stream-error",
+          data: { message },
+          timestamp: Date.now(),
+        }),
+      }).catch(() => {});
+      // #endregion
       setError(message);
       setLoadPhase("error");
       setLoadingGames(false);
@@ -154,6 +168,25 @@ export default function Home() {
   const refreshSession = useCallback(async () => {
     const res = await fetch("/api/session", { cache: "no-store" });
     const data = (await res.json()) as SessionStatus;
+    // #region agent log
+    fetch("http://127.0.0.1:7540/ingest/1d6d0161-91f9-4885-a416-bb26b4b152ed", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "9f44b2" },
+      body: JSON.stringify({
+        sessionId: "9f44b2",
+        hypothesisId: "C",
+        location: "app/page.tsx:refreshSession",
+        message: "session-api-response",
+        data: {
+          ok: res.ok,
+          status: res.status,
+          steamConnected: data.steamConnected,
+          hasSteamId: Boolean(data.steamId),
+        },
+        timestamp: Date.now(),
+      }),
+    }).catch(() => {});
+    // #endregion
     setStatus(data);
     if (data.steamConnected) {
       await loadGames();
@@ -163,6 +196,20 @@ export default function Home() {
   const openAuthPopup = useCallback((url: string) => {
     setError("");
     const popup = window.open(url, "swc-auth", AUTH_POPUP_FEATURES);
+    // #region agent log
+    fetch("http://127.0.0.1:7540/ingest/1d6d0161-91f9-4885-a416-bb26b4b152ed", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "9f44b2" },
+      body: JSON.stringify({
+        sessionId: "9f44b2",
+        hypothesisId: "D",
+        location: "app/page.tsx:openAuthPopup",
+        message: "popup-opened",
+        data: { url, popupBlocked: !popup },
+        timestamp: Date.now(),
+      }),
+    }).catch(() => {});
+    // #endregion
     if (!popup) {
       setError("Allow popups for this site to sign in.");
       return;
@@ -183,6 +230,42 @@ export default function Home() {
 
   useEffect(() => {
     function onAuthMessage(event: MessageEvent) {
+      const rejectReason =
+        event.origin !== window.location.origin
+          ? "origin-mismatch"
+          : authPopupRef.current && event.source !== authPopupRef.current
+            ? "source-mismatch"
+            : !isAuthCompleteMessage(event.data)
+              ? "invalid-payload"
+              : null;
+
+      // #region agent log
+      fetch("http://127.0.0.1:7540/ingest/1d6d0161-91f9-4885-a416-bb26b4b152ed", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "9f44b2" },
+        body: JSON.stringify({
+          sessionId: "9f44b2",
+          hypothesisId: "B",
+          location: "app/page.tsx:onAuthMessage",
+          message: rejectReason ? "message-rejected" : "message-accepted",
+          data: {
+            rejectReason,
+            eventOrigin: event.origin,
+            pageOrigin: window.location.origin,
+            hasPopupRef: Boolean(authPopupRef.current),
+            sourceMatchesPopup: authPopupRef.current
+              ? event.source === authPopupRef.current
+              : null,
+            payloadType:
+              event.data && typeof event.data === "object"
+                ? (event.data as { type?: string }).type
+                : typeof event.data,
+          },
+          timestamp: Date.now(),
+        }),
+      }).catch(() => {});
+      // #endregion
+
       if (event.origin !== window.location.origin) {
         return;
       }

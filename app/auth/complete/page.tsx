@@ -23,12 +23,40 @@ function AuthCompleteInner() {
       return;
     }
 
+    const hasOpener = Boolean(window.opener);
+    const openerClosed = hasOpener ? window.opener!.closed : null;
+    let postMessageSent = false;
+
     if (window.opener && !window.opener.closed) {
       window.opener.postMessage(
         { type: "auth-complete", provider, status },
         window.location.origin,
       );
+      postMessageSent = true;
     }
+
+    // #region agent log
+    fetch("http://127.0.0.1:7540/ingest/1d6d0161-91f9-4885-a416-bb26b4b152ed", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "9f44b2" },
+      body: JSON.stringify({
+        sessionId: "9f44b2",
+        hypothesisId: "A",
+        location: "app/auth/complete/page.tsx:useEffect",
+        message: "auth-complete-page",
+        data: {
+          provider,
+          status,
+          valid,
+          hasOpener,
+          openerClosed,
+          postMessageSent,
+          origin: window.location.origin,
+        },
+        timestamp: Date.now(),
+      }),
+    }).catch(() => {});
+    // #endregion
 
     window.close();
     const timer = window.setTimeout(() => setCloseBlocked(true), 400);
