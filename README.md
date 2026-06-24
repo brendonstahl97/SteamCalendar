@@ -1,36 +1,149 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Steam Wishlist Calendar
 
-## Getting Started
+> **AI-first development:** This application was designed and built primarily using **AI coding tools, models, and agents** (including Cursor and large language models). Human review was applied, but contributors should assume AI-generated patterns, documentation, and implementation choices throughout the codebase.
 
-First, run the development server:
+Turn upcoming games from your public Steam wishlist into calendar reminders via **Google Calendar** or a downloadable **`.ics` file** compatible with most calendar apps.
+
+## Features
+
+- Steam OpenID sign-in (popup flow returns to the main tab)
+- Live wishlist streaming with concrete release-date filtering
+- Google Calendar event creation
+- Standard `.ics` export for Outlook, Thunderbird, mobile calendars, and more
+- Encrypted HTTP-only session cookies; no persistent user database
+
+## Prerequisites
+
+- **Node.js 20+**
+- **npm**
+- A **public** Steam wishlist
+- A **Google Cloud** project with:
+  - OAuth 2.0 credentials (Web application)
+  - **Google Calendar API** enabled
+
+## Local development
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+git clone https://github.com/YOUR_USERNAME/SteamCalendar.git
+cd SteamCalendar
+cp .env.example .env
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Generate a session secret:
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```bash
+openssl rand -hex 32
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Paste the output into `SESSION_SECRET` in `.env`, then install and run:
 
-## Learn More
+```bash
+npm install
+npm run dev
+```
 
-To learn more about Next.js, take a look at the following resources:
+Open [http://localhost:3000](http://localhost:3000).
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Environment variables
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `SESSION_SECRET` | Yes | 64-character hex string (32 bytes). Encrypts session cookies. |
+| `APP_BASE_URL` | Yes | Public app URL, no trailing slash (e.g. `http://localhost:3000`). |
+| `STEAM_REALM` | Yes | Steam OpenID realm; usually same as `APP_BASE_URL`. |
+| `GOOGLE_CLIENT_ID` | Yes | Google OAuth client ID. |
+| `GOOGLE_CLIENT_SECRET` | Yes | Google OAuth client secret. |
+| `STEAM_WEB_API_KEY` | No | Steam Web API key; improves wishlist fetch reliability. |
 
-## Deploy on Vercel
+See [`.env.example`](.env.example) for a copy-paste template.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+**Never commit `.env` or real secrets to git.**
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## Scripts
+
+| Command | Description |
+|---------|-------------|
+| `npm run dev` | Start Next.js development server |
+| `npm run build` | Production build |
+| `npm run start` | Run production server locally |
+| `npm run lint` | ESLint |
+| `npm test` | Run unit and integration tests (Vitest) |
+| `npm run test:watch` | Vitest watch mode |
+| `npm run test:coverage` | Vitest with coverage report |
+
+## Testing
+
+Tests live in `lib/**/*.test.ts` and `tests/integration/**/*.test.ts`. CI runs lint, test, and build on every pull request to `main`.
+
+```bash
+npm test
+```
+
+## Deployment on Vercel
+
+Vercel is the recommended host for this Next.js app. Use **Vercel's native GitHub integration** (not a separate GitHub Actions deploy workflow).
+
+For a step-by-step checklist, see [docs/VERCEL_DEPLOY.md](docs/VERCEL_DEPLOY.md).
+
+### 1. Import the repository
+
+1. Sign in at [vercel.com](https://vercel.com) with GitHub.
+2. **Add New → Project** and import this repository.
+3. Framework preset: **Next.js** (auto-detected).
+4. Build command: `npm run build` (default).
+
+### 2. Set environment variables
+
+In the Vercel project **Settings → Environment Variables**, add:
+
+| Variable | Production | Preview |
+|----------|------------|---------|
+| `SESSION_SECRET` | Unique 64-char hex | Unique per environment |
+| `APP_BASE_URL` | `https://your-app.vercel.app` | Preview URL or fixed preview domain |
+| `STEAM_REALM` | Same as `APP_BASE_URL` | Same as preview `APP_BASE_URL` |
+| `GOOGLE_CLIENT_ID` | From GCP | Same or separate OAuth client |
+| `GOOGLE_CLIENT_SECRET` | From GCP | Matching secret |
+| `STEAM_WEB_API_KEY` | Optional | Optional |
+
+Generate production `SESSION_SECRET` with `openssl rand -hex 32`. **Do not reuse** development secrets.
+
+### 3. Configure OAuth providers
+
+**Google Cloud Console → APIs & Services → Credentials**
+
+Authorized redirect URIs:
+
+- `https://your-app.vercel.app/api/google/callback`
+- For preview deploys, add each preview URL or a supported wildcard pattern
+
+Enable the **Google Calendar API** in the same project.
+
+**Steam OpenID** uses `APP_BASE_URL` and `STEAM_REALM` from [`app/api/steam/start/route.ts`](app/api/steam/start/route.ts). Both must match the live site URL.
+
+### 4. Deploy and verify
+
+1. Push to `main` — Vercel deploys automatically.
+2. Smoke test on production:
+   - Steam sign-in (popup closes, main tab updates)
+   - Wishlist loads
+   - Google connect and event creation
+   - `.ics` download
+
+### 5. Branch protection
+
+After the first CI run on GitHub, enable branch protection on `main` — see [`.github/BRANCH_PROTECTION.md`](.github/BRANCH_PROTECTION.md).
+
+## Contributing
+
+1. Fork and create a feature branch.
+2. Run `npm run lint`, `npm test`, and `npm run build` locally.
+3. Open a pull request using the PR template.
+4. Ensure CI passes before merge.
+
+## Security
+
+See [SECURITY.md](SECURITY.md) for vulnerability reporting. Do not post secrets in public issues.
+
+## License
+
+[MIT](LICENSE)

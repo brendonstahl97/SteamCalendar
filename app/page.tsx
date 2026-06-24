@@ -16,7 +16,6 @@ type SessionStatus = {
   steamConnected: boolean;
   steamId: string | null;
   googleConnected: boolean;
-  appleConnected: boolean;
 };
 
 type StreamProgress = {
@@ -26,13 +25,37 @@ type StreamProgress = {
   failed: number;
 };
 
+type AuthCompleteMessage = {
+  type: "auth-complete";
+  provider: "steam" | "google";
+  status: "connected" | "error";
+};
+
+const ICS_TOOLTIP =
+  "An .ics file is a standard calendar format. You can import it into most calendar apps (Google Calendar, Outlook, Thunderbird, and many mobile calendar apps) via Import or Add calendar.";
+
+const AUTH_POPUP_FEATURES = "width=520,height=720";
+
 const buttonBase =
   "rounded-xl px-4 py-2.5 text-sm font-semibold transition duration-200 disabled:cursor-not-allowed disabled:opacity-50";
+
+function isAuthCompleteMessage(data: unknown): data is AuthCompleteMessage {
+  if (!data || typeof data !== "object") {
+    return false;
+  }
+  const message = data as Record<string, unknown>;
+  return (
+    message.type === "auth-complete" &&
+    (message.provider === "steam" || message.provider === "google") &&
+    (message.status === "connected" || message.status === "error")
+  );
+}
 
 export default function Home() {
   const [started, setStarted] = useState(false);
   const hasBootstrapped = useRef(false);
   const streamRef = useRef<EventSource | null>(null);
+  const authPopupRef = useRef<Window | null>(null);
   const [status, setStatus] = useState<SessionStatus | null>(null);
   const [games, setGames] = useState<WishlistGame[]>([]);
   const [selected, setSelected] = useState<Record<number, boolean>>({});
@@ -49,7 +72,7 @@ export default function Home() {
   const [loadingGames, setLoadingGames] = useState(false);
   const [creating, setCreating] = useState(false);
   const [useGoogle, setUseGoogle] = useState(false);
-  const [useApple, setUseApple] = useState(false);
+  const [useIcs, setUseIcs] = useState(false);
   const [result, setResult] = useState<string>("");
   const [error, setError] = useState<string>("");
 
@@ -137,6 +160,16 @@ export default function Home() {
     }
   }, [loadGames]);
 
+  const openAuthPopup = useCallback((url: string) => {
+    setError("");
+    const popup = window.open(url, "swc-auth", AUTH_POPUP_FEATURES);
+    if (!popup) {
+      setError("Allow popups for this site to sign in.");
+      return;
+    }
+    authPopupRef.current = popup;
+  }, []);
+
   useEffect(() => {
     if (!started || hasBootstrapped.current) {
       return;
@@ -148,6 +181,37 @@ export default function Home() {
     return () => window.clearTimeout(timer);
   }, [started, refreshSession]);
 
+  useEffect(() => {
+    function onAuthMessage(event: MessageEvent) {
+      if (event.origin !== window.location.origin) {
+        return;
+      }
+      if (authPopupRef.current && event.source !== authPopupRef.current) {
+        return;
+      }
+      if (!isAuthCompleteMessage(event.data)) {
+        return;
+      }
+
+      authPopupRef.current = null;
+
+      if (event.data.status === "connected") {
+        setError("");
+        void refreshSession();
+        if (event.data.provider === "google") {
+          setUseGoogle(true);
+        }
+        return;
+      }
+
+      const providerLabel = event.data.provider === "steam" ? "Steam" : "Google";
+      setError(`${providerLabel} sign-in failed. Please try again.`);
+    }
+
+    window.addEventListener("message", onAuthMessage);
+    return () => window.removeEventListener("message", onAuthMessage);
+  }, [refreshSession]);
+
   useEffect(() => () => closeStream(), [closeStream]);
 
   const selectedGames = useMemo(
@@ -155,16 +219,10 @@ export default function Home() {
     [games, selected],
   );
 
-  async function enableApple() {
-    setError("");
-    const res = await fetch("/api/apple/connect", { method: "POST" });
-    if (!res.ok) {
-      setError("Could not enable Apple Calendar export.");
-      return;
-    }
-    await refreshSession();
-    setUseApple(true);
-  }
+  const selectedAppIds = useMemo(
+    () => selectedGames.map((game) => game.appId),
+    [selectedGames],
+  );
 
   async function createEvents() {
     setCreating(true);
@@ -175,16 +233,17 @@ export default function Home() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          games: selectedGames,
-          providers: { google: useGoogle, apple: useApple },
+          appIds: selectedAppIds,
+          providers: { google: useGoogle, ics: useIcs },
         }),
       });
       const createData = (await createRes.json()) as {
         google: { attempted: boolean; created: number; skipped: number; error: string };
-        apple: { attempted: boolean; downloadReady: boolean };
+        ics: { attempted: boolean; downloadReady: boolean };
+        error?: string;
       };
       if (!createRes.ok) {
-        throw new Error("Failed to create events.");
+        throw new Error(createData.error ?? "Failed to create events.");
       }
 
       let message = "";
@@ -193,13 +252,17 @@ export default function Home() {
         if (createData.google.error) {
           message += `${createData.google.error} `;
         }
+        await refreshSession();
       }
-      if (createData.apple.attempted && createData.apple.downloadReady) {
-        const icsRes = await fetch("/api/apple/ics", {
+      if (createData.ics.attempted && createData.ics.downloadReady) {
+        const icsRes = await fetch("/api/ics/export", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ games: selectedGames }),
+          body: JSON.stringify({ appIds: selectedAppIds }),
         });
+        if (!icsRes.ok) {
+          throw new Error("Failed to download .ics file.");
+        }
         const text = await icsRes.text();
         const blob = new Blob([text], { type: "text/calendar;charset=utf-8" });
         const href = URL.createObjectURL(blob);
@@ -208,7 +271,7 @@ export default function Home() {
         a.download = "steam-releases.ics";
         a.click();
         URL.revokeObjectURL(href);
-        message += "Apple: .ics file downloaded.";
+        message += ".ics file downloaded.";
       }
       setResult(message || "No providers selected.");
     } catch (err) {
@@ -236,7 +299,8 @@ export default function Home() {
               </h1>
               <p className="text-sm leading-relaxed text-slate-600 md:text-base">
                 Connect Steam, watch wishlist games stream in live, pick what you care
-                about, and create release events in Google or Apple Calendar.
+                about, and create release events in Google Calendar or a downloadable
+                .ics file.
               </p>
             </div>
             {!started && (
@@ -260,14 +324,13 @@ export default function Home() {
                     Connected as Steam ID: <span className="font-mono">{status.steamId}</span>
                   </p>
                 ) : (
-                  <a
-                    href="/api/steam/start"
-                    className={`${buttonBase} mt-4 inline-flex bg-blue-600 text-white hover:bg-blue-500`}
-                    target="_blank"
-                    rel="noopener noreferrer"
+                  <button
+                    type="button"
+                    className={`${buttonBase} mt-4 bg-blue-600 text-white hover:bg-blue-500`}
+                    onClick={() => openAuthPopup("/api/steam/start")}
                   >
                     Sign in with Steam
-                  </a>
+                  </button>
                 )}
               </div>
 
@@ -371,19 +434,11 @@ export default function Home() {
                   <h2 className="text-lg font-semibold text-slate-900">3. Connect calendars</h2>
                   <div className="mt-4 flex flex-wrap gap-2">
                     <button
+                      type="button"
                       className={`${buttonBase} border border-slate-300 bg-white text-slate-700 hover:bg-slate-50`}
-                      onClick={() => {
-                        setUseGoogle(true);
-                        window.open("/api/google/start", "_blank", "noopener,noreferrer");
-                      }}
+                      onClick={() => openAuthPopup("/api/google/start")}
                     >
                       {status.googleConnected ? "Reconnect Google" : "Connect Google"}
-                    </button>
-                    <button
-                      className={`${buttonBase} border border-slate-300 bg-white text-slate-700 hover:bg-slate-50`}
-                      onClick={() => void enableApple()}
-                    >
-                      {status.appleConnected ? "Apple enabled" : "Enable Apple (.ics)"}
                     </button>
                   </div>
                   <div className="mt-4 space-y-2 text-sm text-slate-700">
@@ -401,11 +456,18 @@ export default function Home() {
                       <input
                         type="checkbox"
                         className="size-4 accent-blue-600"
-                        checked={useApple}
-                        onChange={(e) => setUseApple(e.target.checked)}
-                        disabled={!status.appleConnected}
+                        checked={useIcs}
+                        onChange={(e) => setUseIcs(e.target.checked)}
                       />
-                      Include Apple Calendar (.ics download)
+                      Download .ics file
+                      <button
+                        type="button"
+                        className="inline-flex size-5 items-center justify-center rounded-full border border-slate-300 text-xs font-bold text-slate-500"
+                        aria-label="About .ics files"
+                        title={ICS_TOOLTIP}
+                      >
+                        i
+                      </button>
                     </label>
                   </div>
                 </div>
@@ -414,14 +476,14 @@ export default function Home() {
                   <h2 className="text-lg font-semibold text-slate-900">4. Create events</h2>
                   <p className="mt-3 text-sm text-slate-600">
                     Selected games: {selectedGames.length}. Providers:{" "}
-                    {[useGoogle && "Google", useApple && "Apple"].filter(Boolean).join(", ") ||
+                    {[useGoogle && "Google", useIcs && ".ics download"].filter(Boolean).join(", ") ||
                       "none"}
                     .
                   </p>
                   <button
                     className={`${buttonBase} mt-4 bg-emerald-600 text-white hover:bg-emerald-500`}
                     onClick={() => void createEvents()}
-                    disabled={creating || selectedGames.length === 0 || (!useGoogle && !useApple)}
+                    disabled={creating || selectedGames.length === 0 || (!useGoogle && !useIcs)}
                   >
                     {creating ? "Creating events..." : "Create calendar events"}
                   </button>

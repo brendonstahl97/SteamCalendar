@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  SESSION_SECRET: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+  APP_BASE_URL: "http://localhost:3000"
+  STEAM_REALM: "http://localhost:3000"
+  GOOGLE_CLIENT_ID: "test-client-id"
+  GOOGLE_CLIENT_SECRET: "test-client-secret"
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - run: npm ci
+      - run: npm run lint
+      - run: npm test
+      - run: npm run build

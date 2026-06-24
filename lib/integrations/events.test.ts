@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { gameToEvent, toGoogleEventPayload } from "@/lib/integrations/events";
+import { gameToEvent, toGoogleEventPayload, toICS } from "@/lib/integrations/events";
 
 describe("event mapping", () => {
   it("creates event from a game with exact date", () => {
@@ -32,5 +32,17 @@ describe("event mapping", () => {
     });
     expect(payload.start.date).toBe("2027-03-03");
     expect(payload.summary).toBe("Game Release");
+  });
+
+  it("escapes special characters in ics output", () => {
+    const ics = toICS([
+      {
+        title: "Game; Name, Part",
+        date: "2027-03-03",
+        description: "Line1\nLine2\\path",
+      },
+    ]);
+    expect(ics).toContain("SUMMARY:Game\\; Name\\, Part");
+    expect(ics).toContain("DESCRIPTION:Line1\\nLine2\\\\path");
   });
 });

@@ -1,13 +1,30 @@
+import { checkRateLimit } from "@/lib/rate-limit";
 import { getSession } from "@/lib/session";
 import { streamWishlistGames } from "@/lib/integrations/steam";
 
 export const maxDuration = 60;
 
+function clientKey(request: Request): string {
+  return request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown";
+}
+
 function sseEvent(event: string, data: unknown) {
   return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
 }
 
-export async function GET() {
+export async function GET(request: Request) {
+  const rate = checkRateLimit(`wishlist-stream:${clientKey(request)}`, 5, 60_000);
+  if (!rate.allowed) {
+    return new Response(sseEvent("error", { message: "Too many requests." }), {
+      status: 429,
+      headers: {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        Connection: "keep-alive",
+      },
+    });
+  }
+
   const session = await getSession();
   if (!session.steamConnected || !session.steamId) {
     return new Response(sseEvent("error", { message: "Steam is not connected." }), {

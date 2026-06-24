@@ -30,6 +30,16 @@ function nextDay(date: string) {
   return d.toISOString().slice(0, 10);
 }
 
+function escapeICS(text: string): string {
+  return text
+    .replaceAll("\\", "\\\\")
+    .replaceAll(";", "\\;")
+    .replaceAll(",", "\\,")
+    .replaceAll("\r\n", "\\n")
+    .replaceAll("\n", "\\n")
+    .replaceAll("\r", "\\n");
+}
+
 export function toICS(events: EventTarget[]) {
   const rows = [
     "BEGIN:VCALENDAR",
@@ -46,8 +56,8 @@ export function toICS(events: EventTarget[]) {
     rows.push(`DTSTAMP:${new Date().toISOString().replace(/[-:]/g, "").slice(0, 15)}Z`);
     rows.push(`DTSTART;VALUE=DATE:${day}`);
     rows.push(`DTEND;VALUE=DATE:${endDay}`);
-    rows.push(`SUMMARY:${event.title.replaceAll(",", "\\,")}`);
-    rows.push(`DESCRIPTION:${event.description.replaceAll("\n", "\\n")}`);
+    rows.push(`SUMMARY:${escapeICS(event.title)}`);
+    rows.push(`DESCRIPTION:${escapeICS(event.description)}`);
     rows.push("END:VEVENT");
   }
 

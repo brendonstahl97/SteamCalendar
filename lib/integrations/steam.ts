@@ -289,6 +289,32 @@ export async function streamWishlistGames(
   return progress;
 }
 
+export async function resolveWishlistGamesByAppIds(
+  steamId: string,
+  appIds: number[],
+): Promise<WishlistGame[]> {
+  const uniqueAppIds = [...new Set(appIds)];
+  const wishlistItems = await fetchWishlistItems(steamId);
+  const wishlistAppIds = new Set(wishlistItems.map((item) => item.appid));
+  const allowedAppIds = uniqueAppIds.filter((appId) => wishlistAppIds.has(appId));
+
+  const games: WishlistGame[] = [];
+  for (const appId of allowedAppIds) {
+    const details = await fetchAppDetails(appId);
+    if (!details) {
+      continue;
+    }
+    const game = mapAppDetailsToWishlistGame(appId, details);
+    const eligible = filterUnreleasedGames([game]);
+    if (eligible.length > 0) {
+      games.push(eligible[0]);
+    }
+    await sleep(APP_DETAILS_DELAY_MS);
+  }
+
+  return games;
+}
+
 export async function fetchWishlist(steamId: string) {
   const cachedWishlist = readCache(wishlistCache, steamId);
   if (cachedWishlist) {

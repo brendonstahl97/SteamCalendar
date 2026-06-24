@@ -10,18 +10,16 @@ export type SessionData = {
   googleConnected?: boolean;
   googleAccessToken?: string;
   googleTokenExpiresAt?: number;
-  appleConnected?: boolean;
   oauthStates?: Record<string, string>;
 };
 
-function getKey() {
-  const hex = getEnv().SESSION_SECRET;
+function getKeyFromHex(hex: string) {
   return Buffer.from(hex, "hex");
 }
 
-function encrypt(data: SessionData): string {
+export function encryptSessionData(data: SessionData, secretHex: string): string {
   const iv = randomBytes(12);
-  const key = getKey();
+  const key = getKeyFromHex(secretHex);
   const cipher = createCipheriv("aes-256-gcm", key, iv);
   const plaintext = Buffer.from(JSON.stringify(data), "utf8");
   const encrypted = Buffer.concat([cipher.update(plaintext), cipher.final()]);
@@ -29,17 +27,24 @@ function encrypt(data: SessionData): string {
   return Buffer.concat([iv, tag, encrypted]).toString("base64url");
 }
 
-function decrypt(raw: string): SessionData {
+export function decryptSessionData(raw: string, secretHex: string): SessionData {
   const decoded = Buffer.from(raw, "base64url");
   const iv = decoded.subarray(0, 12);
   const tag = decoded.subarray(12, 28);
   const encrypted = decoded.subarray(28);
-  const key = getKey();
+  const key = getKeyFromHex(secretHex);
   const decipher = createDecipheriv("aes-256-gcm", key, iv);
   decipher.setAuthTag(tag);
   const plaintext = Buffer.concat([decipher.update(encrypted), decipher.final()]);
-  const parsed = JSON.parse(plaintext.toString("utf8"));
-  return parsed as SessionData;
+  return JSON.parse(plaintext.toString("utf8")) as SessionData;
+}
+
+function encrypt(data: SessionData): string {
+  return encryptSessionData(data, getEnv().SESSION_SECRET);
+}
+
+function decrypt(raw: string): SessionData {
+  return decryptSessionData(raw, getEnv().SESSION_SECRET);
 }
 
 export async function getSession(): Promise<SessionData> {

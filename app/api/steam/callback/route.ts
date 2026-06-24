@@ -46,8 +46,13 @@ export async function GET(request: NextRequest) {
       steamId,
       oauthStates: { ...(session.oauthStates ?? {}), steam: "" },
     });
-    return NextResponse.redirect(`${env.APP_BASE_URL}?steam=connected`);
-  } catch {
-    return NextResponse.redirect(`${env.APP_BASE_URL}?steam=error`);
+    return NextResponse.redirect(
+      `${env.APP_BASE_URL}/auth/complete?provider=steam&status=connected`,
+    );
+  } catch (error) {
+    console.error("Steam OAuth callback failed.", error);
+    return NextResponse.redirect(
+      `${env.APP_BASE_URL}/auth/complete?provider=steam&status=error`,
+    );
   }
 }

@@ -42,8 +42,13 @@ export async function GET(request: NextRequest) {
       oauthStates: { ...(session.oauthStates ?? {}), google: "" },
     });
 
-    return NextResponse.redirect(`${env.APP_BASE_URL}?google=connected`);
-  } catch {
-    return NextResponse.redirect(`${env.APP_BASE_URL}?google=error`);
+    return NextResponse.redirect(
+      `${env.APP_BASE_URL}/auth/complete?provider=google&status=connected`,
+    );
+  } catch (error) {
+    console.error("Google OAuth callback failed.", error);
+    return NextResponse.redirect(
+      `${env.APP_BASE_URL}/auth/complete?provider=google&status=error`,
+    );
   }
 }

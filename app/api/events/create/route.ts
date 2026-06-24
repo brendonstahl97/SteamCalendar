@@ -1,71 +1,127 @@
 import { NextRequest, NextResponse } from "next/server";
 import { gameToEvent, toGoogleEventPayload } from "@/lib/integrations/events";
-import { WishlistGame } from "@/lib/integrations/types";
-import { getSession } from "@/lib/session";
-import { isWishlistGameArray } from "@/lib/validation";
+import { resolveWishlistGamesByAppIds } from "@/lib/integrations/steam";
+import { MAX_JSON_BODY_BYTES } from "@/lib/constants";
+import { checkRateLimit } from "@/lib/rate-limit";
+import { getSession, setSession } from "@/lib/session";
+import { isAppIdArray } from "@/lib/validation";
 
 type CreateRequest = {
-  games: WishlistGame[];
-  providers: { google?: boolean; apple?: boolean };
+  appIds: number[];
+  providers: { google?: boolean; ics?: boolean };
 };
 
-export async function POST(request: NextRequest) {
-  const session = await getSession();
-  const body = (await request.json()) as CreateRequest;
-  if (!isWishlistGameArray(body.games)) {
-    return NextResponse.json({ error: "Invalid games payload." }, { status: 400 });
+const GOOGLE_INSERT_CONCURRENCY = 3;
+
+function clientKey(request: NextRequest): string {
+  return request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown";
+}
+
+async function insertGoogleEvents(accessToken: string, events: ReturnType<typeof gameToEvent>[]) {
+  const validEvents = events.filter(
+    (event): event is NonNullable<ReturnType<typeof gameToEvent>> => Boolean(event),
+  );
+  let created = 0;
+  let firstGoogleError = "";
+
+  for (let i = 0; i < validEvents.length; i += GOOGLE_INSERT_CONCURRENCY) {
+    const batch = validEvents.slice(i, i + GOOGLE_INSERT_CONCURRENCY);
+    const results = await Promise.all(
+      batch.map(async (event) => {
+        const payload = toGoogleEventPayload(event);
+        const res = await fetch(
+          "https://www.googleapis.com/calendar/v3/calendars/primary/events",
+          {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify(payload),
+          },
+        );
+        const bodyText = await res.text();
+        if (!res.ok && !firstGoogleError) {
+          firstGoogleError = bodyText.slice(0, 300);
+        }
+        return res.ok;
+      }),
+    );
+    created += results.filter(Boolean).length;
   }
-  const events = body.games
+
+  return {
+    created,
+    skipped: validEvents.length - created,
+    error:
+      created < validEvents.length && firstGoogleError
+        ? "Google API rejected event creation. Check Google Calendar API enablement and OAuth project settings."
+        : "",
+  };
+}
+
+export async function POST(request: NextRequest) {
+  const rate = checkRateLimit(`create:${clientKey(request)}`, 10, 60_000);
+  if (!rate.allowed) {
+    return NextResponse.json({ error: "Too many requests." }, { status: 429 });
+  }
+
+  const session = await getSession();
+  if (!session.steamConnected || !session.steamId) {
+    return NextResponse.json({ error: "Steam is not connected." }, { status: 401 });
+  }
+
+  const contentLength = Number(request.headers.get("content-length") ?? 0);
+  if (contentLength > MAX_JSON_BODY_BYTES) {
+    return NextResponse.json({ error: "Request body too large." }, { status: 413 });
+  }
+
+  const body = (await request.json()) as CreateRequest;
+  if (!isAppIdArray(body.appIds)) {
+    return NextResponse.json({ error: "Invalid appIds payload." }, { status: 400 });
+  }
+
+  const games = await resolveWishlistGamesByAppIds(session.steamId, body.appIds);
+  const events = games
     .map(gameToEvent)
     .filter((event): event is NonNullable<ReturnType<typeof gameToEvent>> =>
       Boolean(event),
     );
+
   const result = {
     google: { attempted: false, created: 0, skipped: 0, error: "" },
-    apple: { attempted: Boolean(body.providers.apple), downloadReady: false },
+    ics: { attempted: Boolean(body.providers.ics), downloadReady: false },
   };
 
   if (body.providers.google) {
     result.google.attempted = true;
+    const tokenExpired =
+      session.googleTokenExpiresAt !== undefined &&
+      session.googleTokenExpiresAt <= Date.now();
+
     if (!session.googleConnected || !session.googleAccessToken) {
       result.google.error = "Google account is not connected.";
+    } else if (tokenExpired) {
+      result.google.error = "Google session expired. Reconnect Google and try again.";
+    } else if (events.length === 0) {
+      result.google.error = "No eligible games found for event creation.";
     } else {
-      let firstGoogleError = "";
-      const inserts = await Promise.all(
-        events.map(async (event, index) => {
-          const payload = toGoogleEventPayload(event);
-          const res = await fetch(
-            "https://www.googleapis.com/calendar/v3/calendars/primary/events",
-            {
-              method: "POST",
-              headers: {
-                Authorization: `Bearer ${session.googleAccessToken}`,
-                "Content-Type": "application/json",
-              },
-              body: JSON.stringify(payload),
-            },
-          );
-          if (index < 3) {
-            const bodyText = await res.text();
-            if (!res.ok && !firstGoogleError) {
-              firstGoogleError = bodyText.slice(0, 300);
-            }
-            return res.ok;
-          }
-          return res.ok;
-        }),
-      );
-      result.google.created = inserts.filter(Boolean).length;
-      result.google.skipped = events.length - result.google.created;
-      if (result.google.skipped > 0 && firstGoogleError) {
-        result.google.error =
-          "Google API rejected event creation. Check Google Calendar API enablement and OAuth project settings.";
-      }
+      const googleResult = await insertGoogleEvents(session.googleAccessToken, events);
+      result.google.created = googleResult.created;
+      result.google.skipped = googleResult.skipped;
+      result.google.error = googleResult.error;
+
+      await setSession({
+        ...session,
+        googleAccessToken: undefined,
+        googleTokenExpiresAt: undefined,
+        googleConnected: false,
+      });
     }
   }
 
-  if (body.providers.apple) {
-    result.apple.downloadReady = true;
+  if (body.providers.ics && events.length > 0) {
+    result.ics.downloadReady = true;
   }
 
   return NextResponse.json(result);

@@ -1,7 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   filterUnreleasedGames,
   mapAppDetailsToWishlistGame,
+  resolveWishlistGamesByAppIds,
   toWishlistGame,
 } from "@/lib/integrations/steam";
 
@@ -92,5 +93,58 @@ describe("steam integration", () => {
     ];
     const unreleased = filterUnreleasedGames(list);
     expect(unreleased.map((g) => g.appId)).toEqual([2]);
+  });
+
+  describe("resolveWishlistGamesByAppIds", () => {
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    it("returns only wishlisted games with eligible release dates", async () => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (input: RequestInfo | URL) => {
+          const url = String(input);
+          if (url.includes("GetWishlist")) {
+            return new Response(
+              JSON.stringify({ response: { items: [{ appid: 100 }, { appid: 200 }] } }),
+              { headers: { "content-type": "application/json" } },
+            );
+          }
+          if (url.includes("appids=100")) {
+            return new Response(
+              JSON.stringify({
+                "100": {
+                  success: true,
+                  data: {
+                    name: "Future Game",
+                    release_date: { coming_soon: false, date: "Jan 15, 2030" },
+                  },
+                },
+              }),
+              { headers: { "content-type": "application/json" } },
+            );
+          }
+          if (url.includes("appids=200")) {
+            return new Response(
+              JSON.stringify({
+                "200": {
+                  success: true,
+                  data: {
+                    name: "Soon",
+                    release_date: { coming_soon: true, date: "Coming Soon" },
+                  },
+                },
+              }),
+              { headers: { "content-type": "application/json" } },
+            );
+          }
+          return new Response("{}", { status: 404 });
+        }),
+      );
+
+      const games = await resolveWishlistGamesByAppIds("steam-user", [100, 200, 999]);
+      expect(games.map((game) => game.appId)).toEqual([100]);
+    });
   });
 });
