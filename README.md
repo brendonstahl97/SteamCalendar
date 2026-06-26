@@ -2,14 +2,14 @@
 
 > **AI-first development:** This application was designed and built primarily using **AI coding tools, models, and agents** (including Cursor and large language models). Human review was applied, but contributors should assume AI-generated patterns, documentation, and implementation choices throughout the codebase.
 
-Turn upcoming games from your public Steam wishlist into calendar reminders via **Google Calendar** or a downloadable **`.ics` file** compatible with most calendar apps.
+Turn upcoming games from your public Steam wishlist into calendar reminders via **per-game Google Calendar links** or a downloadable **`.ics` file** — no Google account connection or OAuth required.
 
 ## Features
 
 - Steam OpenID sign-in (popup flow returns to the main tab)
 - Live wishlist streaming with concrete release-date filtering
-- Google Calendar event creation
-- Standard `.ics` export for Outlook, Thunderbird, mobile calendars, and more
+- Per-game **Add to Google Calendar** links (opens Google's event UI)
+- Bulk `.ics` export for Google Calendar, Outlook, Thunderbird, and more
 - Encrypted HTTP-only session cookies; no persistent user database
 
 ## Prerequisites
@@ -17,9 +17,6 @@ Turn upcoming games from your public Steam wishlist into calendar reminders via 
 - **Node.js 20+**
 - **npm**
 - A **public** Steam wishlist
-- A **Google Cloud** project with:
-  - OAuth 2.0 credentials (Web application)
-  - **Google Calendar API** enabled
 
 ## Local development
 
@@ -51,8 +48,6 @@ Open [http://localhost:3000](http://localhost:3000).
 | `SESSION_SECRET` | Yes | 64-character hex string (32 bytes). Encrypts session cookies. |
 | `APP_BASE_URL` | Yes | Public app URL, no trailing slash (e.g. `http://localhost:3000`). |
 | `STEAM_REALM` | Yes | Steam OpenID realm; usually same as `APP_BASE_URL`. |
-| `GOOGLE_CLIENT_ID` | Yes | Google OAuth client ID. |
-| `GOOGLE_CLIENT_SECRET` | Yes | Google OAuth client secret. |
 | `STEAM_WEB_API_KEY` | No | Steam Web API key; improves wishlist fetch reliability. |
 
 See [`.env.example`](.env.example) for a copy-paste template.
@@ -101,22 +96,11 @@ In the Vercel project **Settings → Environment Variables**, add:
 | `SESSION_SECRET` | Unique 64-char hex | Unique per environment |
 | `APP_BASE_URL` | `https://your-app.vercel.app` | Preview URL or fixed preview domain |
 | `STEAM_REALM` | Same as `APP_BASE_URL` | Same as preview `APP_BASE_URL` |
-| `GOOGLE_CLIENT_ID` | From GCP | Same or separate OAuth client |
-| `GOOGLE_CLIENT_SECRET` | From GCP | Matching secret |
 | `STEAM_WEB_API_KEY` | Optional | Optional |
 
 Generate production `SESSION_SECRET` with `openssl rand -hex 32`. **Do not reuse** development secrets.
 
-### 3. Configure OAuth providers
-
-**Google Cloud Console → APIs & Services → Credentials**
-
-Authorized redirect URIs:
-
-- `https://your-app.vercel.app/api/google/callback`
-- For preview deploys, add each preview URL or a supported wildcard pattern
-
-Enable the **Google Calendar API** in the same project.
+### 3. Configure Steam OpenID
 
 **Steam OpenID** uses `APP_BASE_URL` and `STEAM_REALM` from [`app/api/steam/start/route.ts`](app/api/steam/start/route.ts). Both must match the live site URL.
 
@@ -126,8 +110,8 @@ Enable the **Google Calendar API** in the same project.
 2. Smoke test on production:
    - Steam sign-in (popup closes, main tab updates)
    - Wishlist loads
-   - Google connect and event creation
-   - `.ics` download
+   - Per-game Google Calendar links open correctly
+   - `.ics` download and import
 
 ### 5. Branch protection
 

@@ -1,6 +1,19 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { AppShell } from "@/components/AppShell";
+import { WishlistGameCard } from "@/components/WishlistGameCard";
+import { IcsHelpDisclosure } from "@/components/IcsHelpDisclosure";
+import { StepBadge } from "@/components/StepBadge";
+import { StepProgress } from "@/components/StepProgress";
+import { Alert } from "@/components/ui/Alert";
+import { Button } from "@/components/ui/Button";
+import { Card } from "@/components/ui/Card";
+import {
+  getSetupProgress,
+  getStepSectionId,
+  type SetupStepId,
+} from "@/lib/setup-flow";
 import {
   readWishlistCache,
   writeWishlistCache,
@@ -10,7 +23,6 @@ import type { WishlistGame } from "@/lib/integrations/types";
 type SessionStatus = {
   steamConnected: boolean;
   steamId: string | null;
-  googleConnected: boolean;
 };
 
 type StreamProgress = {
@@ -22,17 +34,11 @@ type StreamProgress = {
 
 type AuthCompleteMessage = {
   type: "auth-complete";
-  provider: "steam" | "google";
+  provider: "steam";
   status: "connected" | "error";
 };
 
-const ICS_TOOLTIP =
-  "An .ics file is a standard calendar format. You can import it into most calendar apps (Google Calendar, Outlook, Thunderbird, and many mobile calendar apps) via Import or Add calendar.";
-
 const AUTH_POPUP_FEATURES = "width=520,height=720";
-
-const buttonBase =
-  "rounded-xl px-4 py-2.5 text-sm font-semibold transition duration-200 disabled:cursor-not-allowed disabled:opacity-50";
 
 function isAuthCompleteMessage(data: unknown): data is AuthCompleteMessage {
   if (!data || typeof data !== "object") {
@@ -41,9 +47,16 @@ function isAuthCompleteMessage(data: unknown): data is AuthCompleteMessage {
   const message = data as Record<string, unknown>;
   return (
     message.type === "auth-complete" &&
-    (message.provider === "steam" || message.provider === "google") &&
+    message.provider === "steam" &&
     (message.status === "connected" || message.status === "error")
   );
+}
+
+function stepStatusFor(
+  steps: ReturnType<typeof getSetupProgress>["steps"],
+  id: SetupStepId,
+) {
+  return steps.find((step) => step.id === id)?.status ?? "locked";
 }
 
 export default function Home() {
@@ -52,6 +65,7 @@ export default function Home() {
   const streamRef = useRef<EventSource | null>(null);
   const authPopupRef = useRef<Window | null>(null);
   const previousSteamIdRef = useRef<string | null>(null);
+  const previousStepRef = useRef<SetupStepId | null>(null);
   const [status, setStatus] = useState<SessionStatus | null>(null);
   const [games, setGames] = useState<WishlistGame[]>([]);
   const [selected, setSelected] = useState<Record<number, boolean>>({});
@@ -66,9 +80,7 @@ export default function Home() {
   });
   const [warning, setWarning] = useState("");
   const [loadingGames, setLoadingGames] = useState(false);
-  const [creating, setCreating] = useState(false);
-  const [useGoogle, setUseGoogle] = useState(false);
-  const [useIcs, setUseIcs] = useState(false);
+  const [downloading, setDownloading] = useState(false);
   const [result, setResult] = useState<string>("");
   const [error, setError] = useState<string>("");
   const [fetchedAt, setFetchedAt] = useState<number | null>(null);
@@ -268,18 +280,14 @@ export default function Home() {
         setError("");
         void (async () => {
           const data = await refreshSession();
-          if (event.data.provider === "steam" && data.steamConnected && data.steamId) {
+          if (data.steamConnected && data.steamId) {
             hydrateWishlistFromCache(data.steamId);
           }
         })();
-        if (event.data.provider === "google") {
-          setUseGoogle(true);
-        }
         return;
       }
 
-      const providerLabel = event.data.provider === "steam" ? "Steam" : "Google";
-      setError(`${providerLabel} sign-in failed. Please try again.`);
+      setError("Steam sign-in failed. Please try again.");
     }
 
     window.addEventListener("message", onAuthMessage);
@@ -298,62 +306,84 @@ export default function Home() {
     [selectedGames],
   );
 
-  async function createEvents() {
-    setCreating(true);
+  const setupProgress = useMemo(
+    () =>
+      getSetupProgress({
+        steamConnected: Boolean(status?.steamConnected),
+        loadPhase,
+        gamesCount: games.length,
+        selectedCount: selectedGames.length,
+      }),
+    [status?.steamConnected, loadPhase, games.length, selectedGames.length],
+  );
+
+  useEffect(() => {
+    if (!started) {
+      return;
+    }
+    const current = setupProgress.currentStep;
+    if (previousStepRef.current && previousStepRef.current !== current) {
+      document
+        .getElementById(getStepSectionId(current))
+        ?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+    previousStepRef.current = current;
+  }, [setupProgress.currentStep, started]);
+
+  const downloadIcs = useCallback(async () => {
+    if (selectedAppIds.length === 0) {
+      return;
+    }
+    setDownloading(true);
     setError("");
     setResult("");
     try {
-      const createRes = await fetch("/api/events/create", {
+      const icsRes = await fetch("/api/ics/export", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          appIds: selectedAppIds,
-          providers: { google: useGoogle, ics: useIcs },
-        }),
+        body: JSON.stringify({ appIds: selectedAppIds }),
       });
-      const createData = (await createRes.json()) as {
-        google: { attempted: boolean; created: number; skipped: number; error: string };
-        ics: { attempted: boolean; downloadReady: boolean };
-        error?: string;
-      };
-      if (!createRes.ok) {
-        throw new Error(createData.error ?? "Failed to create events.");
+      if (!icsRes.ok) {
+        const payload = (await icsRes.json()) as { error?: string };
+        throw new Error(payload.error ?? "Failed to download .ics file.");
       }
-
-      let message = "";
-      if (createData.google.attempted) {
-        message += `Google: created ${createData.google.created}, skipped ${createData.google.skipped}. `;
-        if (createData.google.error) {
-          message += `${createData.google.error} `;
-        }
-        await refreshSession();
-      }
-      if (createData.ics.attempted && createData.ics.downloadReady) {
-        const icsRes = await fetch("/api/ics/export", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ appIds: selectedAppIds }),
-        });
-        if (!icsRes.ok) {
-          throw new Error("Failed to download .ics file.");
-        }
-        const text = await icsRes.text();
-        const blob = new Blob([text], { type: "text/calendar;charset=utf-8" });
-        const href = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = href;
-        a.download = "steam-releases.ics";
-        a.click();
-        URL.revokeObjectURL(href);
-        message += ".ics file downloaded.";
-      }
-      setResult(message || "No providers selected.");
+      const text = await icsRes.text();
+      const blob = new Blob([text], { type: "text/calendar;charset=utf-8" });
+      const href = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = href;
+      a.download = "steam-releases.ics";
+      a.click();
+      URL.revokeObjectURL(href);
+      setResult(".ics file downloaded. Import it into your calendar app when ready.");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unknown error.");
     } finally {
-      setCreating(false);
+      setDownloading(false);
     }
-  }
+  }, [selectedAppIds]);
+
+  const handleNextAction = useCallback(() => {
+    const action = setupProgress.nextAction;
+    if (!action) {
+      return;
+    }
+    switch (action.stepId) {
+      case "steam":
+        openAuthPopup("/api/steam/start");
+        break;
+      case "fetch":
+        fetchWishlist();
+        break;
+      case "export":
+        void downloadIcs();
+        break;
+      default:
+        document
+          .getElementById(getStepSectionId(action.stepId))
+          ?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  }, [downloadIcs, fetchWishlist, openAuthPopup, setupProgress.nextAction]);
 
   const allSelected = games.length > 0 && selectedGames.length === games.length;
   const progressPercent =
@@ -370,249 +400,288 @@ export default function Home() {
       ? `Last fetched: ${new Date(fetchedAt).toLocaleString()}`
       : null;
 
+  const nextActionDisabled = useMemo(() => {
+    const action = setupProgress.nextAction;
+    if (!action) {
+      return true;
+    }
+    if (action.stepId === "fetch") {
+      return isFetching || !status?.steamConnected;
+    }
+    if (action.stepId === "export") {
+      return downloading || selectedGames.length === 0;
+    }
+    if (action.stepId === "select" && games.length === 0) {
+      return true;
+    }
+    return false;
+  }, [
+    setupProgress.nextAction,
+    isFetching,
+    status?.steamConnected,
+    downloading,
+    selectedGames.length,
+    games.length,
+  ]);
+
+  const showGameSteps = Boolean(status?.steamConnected);
+  const showExportStep = showGameSteps && selectedGames.length > 0;
+
   return (
-    <main className="relative min-h-screen bg-gradient-to-b from-slate-50 via-white to-blue-50">
-      <div className="mx-auto w-full max-w-6xl px-4 py-6 md:px-8 md:py-10">
-        <section className="rounded-3xl border border-white/70 bg-white/80 p-6 shadow-xl backdrop-blur md:p-10">
-          <div className="flex flex-col gap-8 md:flex-row md:items-end md:justify-between">
-            <div className="max-w-2xl space-y-4">
-              <p className="inline-block rounded-full bg-blue-100 px-3 py-1 text-xs font-semibold tracking-wide text-blue-700">
-                Steam Wishlist to Calendar
-              </p>
-              <h1 className="text-3xl font-bold tracking-tight text-slate-900 md:text-5xl">
-                Turn upcoming wishlisted games into calendar reminders automatically.
-              </h1>
-              <p className="text-sm leading-relaxed text-slate-600 md:text-base">
-                Connect Steam, watch wishlist games stream in live, pick what you care
-                about, and create release events in Google Calendar or a downloadable
-                .ics file.
-              </p>
-            </div>
-            {!started && (
-              <button
-                className={`${buttonBase} bg-slate-900 text-white hover:-translate-y-0.5 hover:bg-slate-800`}
-                onClick={() => setStarted(true)}
-              >
-                Start setup
-              </button>
-            )}
+    <AppShell>
+      <Card className="bg-surface-elevated/80 p-6 md:p-10">
+        <div className="flex flex-col gap-6 md:flex-row md:items-end md:justify-between">
+          <div className="max-w-2xl space-y-4">
+            <p className="inline-block rounded-full bg-accent/20 px-3 py-1 text-xs font-semibold tracking-wide text-accent-hover">
+              Steam Wishlist to Calendar
+            </p>
+            <h1 className="text-2xl font-bold tracking-tight text-foreground md:text-4xl">
+              Turn upcoming wishlisted games into calendar reminders.
+            </h1>
+            <p className="text-sm leading-relaxed text-muted md:text-base">
+              Connect Steam, pick upcoming releases, then add them to your calendar
+              one at a time or download everything as a .ics file. No Google account
+              connection required.
+            </p>
           </div>
-        </section>
+          {!started && (
+            <Button variant="primary" fullWidth onClick={() => setStarted(true)}>
+              Start setup
+            </Button>
+          )}
+        </div>
+      </Card>
 
-        {started && (
-          <section className="mt-8 grid gap-6">
-            <div className="grid gap-6 lg:grid-cols-2">
-              <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-                <h2 className="text-lg font-semibold text-slate-900">1. Connect Steam</h2>
-                {status?.steamConnected ? (
-                  <p className="mt-3 text-sm text-slate-600">
-                    Connected as Steam ID: <span className="font-mono">{status.steamId}</span>
-                  </p>
-                ) : (
-                  <button
-                    type="button"
-                    className={`${buttonBase} mt-4 bg-blue-600 text-white hover:bg-blue-500`}
-                    onClick={() => openAuthPopup("/api/steam/start")}
-                  >
-                    Sign in with Steam
-                  </button>
-                )}
-              </div>
+      {started && (
+        <section className="mt-6 space-y-6 md:mt-8 md:space-y-8">
+          <div className="sticky top-0 z-10 -mx-4 border-b border-border bg-background/90 px-4 py-3 backdrop-blur md:-mx-8 md:px-8">
+            <StepProgress steps={setupProgress.steps} />
+          </div>
 
-              <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-                <h2 className="text-lg font-semibold text-slate-900">Live loading status</h2>
-                <p className="mt-2 text-sm text-slate-600">
-                  {loadPhase === "idle" && "Click Get Wishlist Items to load your wishlist."}
-                  {loadPhase === "connecting" && "Connecting to wishlist stream..."}
-                  {loadPhase === "loading" &&
-                    `Loading games: ${progress.processed}/${progress.total} processed`}
-                  {loadPhase === "loaded" &&
-                    `Loaded ${games.length} eligible games. Ready to select.`}
-                  {loadPhase === "error" && "Loading failed. See error below."}
-                </p>
-                {status?.steamConnected && (
-                  <button
-                    type="button"
-                    className={`${buttonBase} mt-4 border border-slate-300 bg-white text-slate-700 hover:bg-slate-50`}
-                    onClick={() => fetchWishlist()}
-                    disabled={isFetching}
-                  >
-                    {fetchButtonLabel}
-                  </button>
-                )}
-                {lastFetchedLabel && (
-                  <p className="mt-2 text-xs text-slate-500">{lastFetchedLabel}</p>
-                )}
-                <div className="mt-4 h-2 overflow-hidden rounded-full bg-slate-100">
-                  <div
-                    className="h-full bg-blue-500 transition-all duration-300"
-                    style={{ width: `${progressPercent}%` }}
-                  />
-                </div>
-                <p className="mt-2 text-xs text-slate-500">
-                  Emitted: {progress.emitted} | Failed details: {progress.failed}
-                </p>
-              </div>
+          <Card
+            id={getStepSectionId("steam")}
+            dimmed={stepStatusFor(setupProgress.steps, "steam") === "locked"}
+            className="scroll-mt-32 p-5"
+          >
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h2 className="text-lg font-semibold text-foreground">1. Connect Steam</h2>
+              <StepBadge status={stepStatusFor(setupProgress.steps, "steam")} />
             </div>
+            {status?.steamConnected ? (
+              <p className="mt-3 text-sm text-muted">
+                Connected as Steam ID:{" "}
+                <span className="font-mono text-foreground">{status.steamId}</span>
+              </p>
+            ) : (
+              <div className="mt-4 space-y-2">
+                <Button
+                  variant="primary"
+                  fullWidth
+                  onClick={() => openAuthPopup("/api/steam/start")}
+                >
+                  Sign in with Steam
+                </Button>
+                <p className="text-xs text-muted">
+                  Allow popups if sign-in does not open.
+                </p>
+              </div>
+            )}
+          </Card>
 
+          <Card
+            id={getStepSectionId("fetch")}
+            dimmed={stepStatusFor(setupProgress.steps, "fetch") === "locked"}
+            className="scroll-mt-32 p-5"
+          >
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h2 className="text-lg font-semibold text-foreground">2. Load wishlist</h2>
+              <StepBadge status={stepStatusFor(setupProgress.steps, "fetch")} />
+            </div>
+            <p className="mt-2 text-sm text-muted">
+              {loadPhase === "idle" && "Click Get Wishlist Items to load your wishlist."}
+              {loadPhase === "connecting" && "Connecting to wishlist stream..."}
+              {loadPhase === "loading" &&
+                `Loading games: ${progress.processed}/${progress.total} processed`}
+              {loadPhase === "loaded" &&
+                `Loaded ${games.length} eligible games. Ready to select.`}
+              {loadPhase === "error" && "Loading failed. See error below."}
+            </p>
             {status?.steamConnected && (
-              <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                  <h2 className="text-lg font-semibold text-slate-900">
-                    2. Select upcoming wishlist games
-                  </h2>
-                  <button
-                    type="button"
-                    className={`${buttonBase} border border-slate-300 bg-white text-slate-700 hover:bg-slate-50`}
-                    onClick={() => {
-                      const next = !allSelected;
-                      setSelected(
-                        Object.fromEntries(games.map((game) => [game.appId, next])),
-                      );
-                    }}
-                    disabled={games.length === 0}
-                  >
-                    {allSelected ? "Uncheck all" : "Toggle all"}
-                  </button>
-                </div>
+              <Button
+                variant="secondary"
+                fullWidth
+                className="mt-4"
+                onClick={() => fetchWishlist()}
+                disabled={isFetching}
+              >
+                {fetchButtonLabel}
+              </Button>
+            )}
+            {lastFetchedLabel && (
+              <p className="mt-2 text-xs text-muted">{lastFetchedLabel}</p>
+            )}
+            <div className="mt-4 h-2 overflow-hidden rounded-full bg-surface-elevated">
+              <div
+                className="h-full bg-accent transition-all duration-300"
+                style={{ width: `${progressPercent}%` }}
+              />
+            </div>
+            <p className="mt-2 text-xs text-muted">
+              Emitted: {progress.emitted} | Failed details: {progress.failed}
+            </p>
+          </Card>
 
-                {loadingGames && games.length === 0 && (
-                  <div className="mt-5 grid gap-3">
-                    {Array.from({ length: 4 }).map((_, idx) => (
-                      <div
-                        key={idx}
-                        className="h-16 animate-pulse rounded-xl bg-slate-100"
-                      />
-                    ))}
-                  </div>
-                )}
-
-                {!loadingGames && games.length === 0 && loadPhase === "idle" && (
-                  <p className="mt-4 text-sm text-slate-600">
-                    Fetch your wishlist using the button in the Live loading status card.
-                  </p>
-                )}
-
-                {!loadingGames && games.length === 0 && loadPhase === "loaded" && (
-                  <p className="mt-4 text-sm text-slate-600">
-                    No upcoming unreleased games were found yet.
-                  </p>
-                )}
-
-                {games.length > 0 && (
-                  <ul className="mt-5 grid gap-3 md:grid-cols-2">
-                    {games.map((game, index) => (
-                      <li
-                        key={game.appId}
-                        className="wishlist-item-enter flex items-start gap-3 rounded-xl border border-slate-200 p-4 shadow-sm"
-                        style={{ animationDelay: `${Math.min(index * 35, 400)}ms` }}
-                      >
-                        <input
-                          type="checkbox"
-                          className="mt-1 size-4 accent-blue-600"
-                          checked={Boolean(selected[game.appId])}
-                          onChange={(event) =>
-                            setSelected((prev) => ({
-                              ...prev,
-                              [game.appId]: event.target.checked,
-                            }))
-                          }
-                        />
-                        <div className="min-w-0">
-                          <p className="truncate font-semibold text-slate-900">{game.name}</p>
-                          <p className="mt-1 text-xs text-slate-600">
-                            Release: {game.releaseDateText}
-                          </p>
-                          <p className="text-xs text-slate-500">App ID: {game.appId}</p>
-                        </div>
-                      </li>
-                    ))}
-                  </ul>
-                )}
+          {showGameSteps && (
+            <Card
+              id={getStepSectionId("select")}
+              dimmed={stepStatusFor(setupProgress.steps, "select") === "locked"}
+              className="scroll-mt-32 p-5"
+            >
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <h2 className="text-lg font-semibold text-foreground">
+                  3. Select upcoming wishlist games
+                </h2>
+                <StepBadge status={stepStatusFor(setupProgress.steps, "select")} />
               </div>
-            )}
 
-            {status?.steamConnected && games.length > 0 && (
-              <div className="grid gap-6 lg:grid-cols-2">
-                <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-                  <h2 className="text-lg font-semibold text-slate-900">3. Connect calendars</h2>
-                  <div className="mt-4 flex flex-wrap gap-2">
-                    <button
-                      type="button"
-                      className={`${buttonBase} border border-slate-300 bg-white text-slate-700 hover:bg-slate-50`}
-                      onClick={() => openAuthPopup("/api/google/start")}
-                    >
-                      {status.googleConnected ? "Reconnect Google" : "Connect Google"}
-                    </button>
-                  </div>
-                  <div className="mt-4 space-y-2 text-sm text-slate-700">
-                    <label className="flex items-center gap-2">
-                      <input
-                        type="checkbox"
-                        className="size-4 accent-blue-600"
-                        checked={useGoogle}
-                        onChange={(e) => setUseGoogle(e.target.checked)}
-                        disabled={!status.googleConnected}
-                      />
-                      Include Google Calendar
-                    </label>
-                    <label className="flex items-center gap-2">
-                      <input
-                        type="checkbox"
-                        className="size-4 accent-blue-600"
-                        checked={useIcs}
-                        onChange={(e) => setUseIcs(e.target.checked)}
-                      />
-                      Download .ics file
-                      <button
-                        type="button"
-                        className="inline-flex size-5 items-center justify-center rounded-full border border-slate-300 text-xs font-bold text-slate-500"
-                        aria-label="About .ics files"
-                        title={ICS_TOOLTIP}
-                      >
-                        i
-                      </button>
-                    </label>
-                  </div>
+              {games.length > 0 && (
+                <p className="mt-3 rounded-lg border border-border bg-surface-elevated px-3 py-2 text-sm text-muted">
+                  <span className="font-medium text-foreground">Two options — both optional.</span>{" "}
+                  Add games one at a time below, or download all selected in step 4.
+                </p>
+              )}
+
+              <div className="mt-3 flex flex-wrap gap-2">
+                <Button
+                  variant="ghost"
+                  onClick={() => {
+                    const next = !allSelected;
+                    setSelected(
+                      Object.fromEntries(games.map((game) => [game.appId, next])),
+                    );
+                  }}
+                  disabled={
+                    games.length === 0 ||
+                    stepStatusFor(setupProgress.steps, "select") === "locked"
+                  }
+                >
+                  {allSelected ? "Uncheck all" : "Toggle all"}
+                </Button>
+              </div>
+
+              {loadingGames && games.length === 0 && (
+                <div className="mt-5 grid gap-3">
+                  {Array.from({ length: 4 }).map((_, idx) => (
+                    <div
+                      key={idx}
+                      className="h-16 animate-pulse rounded-xl bg-surface-elevated"
+                    />
+                  ))}
+                </div>
+              )}
+
+              {!loadingGames && games.length === 0 && loadPhase === "idle" && (
+                <p className="mt-4 text-sm text-muted">
+                  Fetch your wishlist using the button in step 2.
+                </p>
+              )}
+
+              {!loadingGames && games.length === 0 && loadPhase === "loaded" && (
+                <p className="mt-4 text-sm text-muted">
+                  No upcoming unreleased games were found yet.
+                </p>
+              )}
+
+              {games.length > 0 && (
+                <ul className="mt-5 grid min-w-0 gap-3 lg:grid-cols-2">
+                  {games.map((game, index) => (
+                    <WishlistGameCard
+                      key={game.appId}
+                      game={game}
+                      selected={Boolean(selected[game.appId])}
+                      disabled={stepStatusFor(setupProgress.steps, "select") === "locked"}
+                      animationDelayMs={Math.min(index * 35, 400)}
+                      onToggle={(checked) =>
+                        setSelected((prev) => ({
+                          ...prev,
+                          [game.appId]: checked,
+                        }))
+                      }
+                    />
+                  ))}
+                </ul>
+              )}
+            </Card>
+          )}
+
+          {showExportStep && (
+            <Card
+              id={getStepSectionId("export")}
+              dimmed={stepStatusFor(setupProgress.steps, "export") === "locked"}
+              className="scroll-mt-32 p-5"
+            >
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <h2 className="text-lg font-semibold text-foreground">
+                  4. Export to your calendar (optional)
+                </h2>
+                <StepBadge status={stepStatusFor(setupProgress.steps, "export")} />
+              </div>
+
+              <p className="mt-3 text-sm text-muted">
+                You&apos;re done whenever your calendar looks right. No account connection
+                needed — use one option below, both, or neither.
+              </p>
+
+              <div className="mt-5 grid gap-4 lg:grid-cols-2">
+                <div className="rounded-xl border border-border bg-surface-elevated p-4">
+                  <h3 className="text-sm font-semibold text-foreground">One at a time</h3>
+                  <p className="mt-2 text-sm text-muted">
+                    Use <span className="text-foreground">Add to Google Calendar</span> on each
+                    game card above. Opens Google Calendar in a new tab — tap Save for each
+                    event.
+                  </p>
                 </div>
 
-                <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-                  <h2 className="text-lg font-semibold text-slate-900">4. Create events</h2>
-                  <p className="mt-3 text-sm text-slate-600">
-                    Selected games: {selectedGames.length}. Providers:{" "}
-                    {[useGoogle && "Google", useIcs && ".ics download"].filter(Boolean).join(", ") ||
-                      "none"}
-                    .
+                <div className="rounded-xl border border-border bg-surface-elevated p-4">
+                  <h3 className="text-sm font-semibold text-foreground">All selected at once</h3>
+                  <p className="mt-2 text-sm text-muted">
+                    Download a .ics file for {selectedGames.length} selected game
+                    {selectedGames.length === 1 ? "" : "s"}, then import into Google Calendar
+                    (Settings → Import &amp; export → Import) or any calendar app.{" "}
+                    <IcsHelpDisclosure />
                   </p>
-                  <button
-                    className={`${buttonBase} mt-4 bg-emerald-600 text-white hover:bg-emerald-500`}
-                    onClick={() => void createEvents()}
-                    disabled={creating || selectedGames.length === 0 || (!useGoogle && !useIcs)}
+                  <Button
+                    variant="primary"
+                    fullWidth
+                    className="mt-4"
+                    onClick={() => void downloadIcs()}
+                    disabled={downloading || selectedGames.length === 0}
                   >
-                    {creating ? "Creating events..." : "Create calendar events"}
-                  </button>
+                    {downloading ? "Downloading..." : "Download .ics for selected games"}
+                  </Button>
                 </div>
               </div>
-            )}
+            </Card>
+          )}
 
-            {warning && (
-              <p className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-                {warning}
-              </p>
-            )}
-            {error && (
-              <p className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-                {error}
-              </p>
-            )}
-            {result && (
-              <p className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
-                {result}
-              </p>
-            )}
-          </section>
-        )}
-      </div>
-    </main>
+          {warning && <Alert variant="warning">{warning}</Alert>}
+          {error && <Alert variant="error">{error}</Alert>}
+          {result && <Alert variant="success">{result}</Alert>}
+        </section>
+      )}
+
+      {started && setupProgress.nextAction && (
+        <div className="fixed inset-x-0 bottom-0 z-20 border-t border-border bg-surface/95 p-4 pb-safe backdrop-blur lg:hidden">
+          <Button
+            variant="primary"
+            fullWidth
+            onClick={handleNextAction}
+            disabled={nextActionDisabled}
+          >
+            {setupProgress.nextAction.label}
+          </Button>
+        </div>
+      )}
+    </AppShell>
   );
 }

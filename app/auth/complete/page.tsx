@@ -2,9 +2,11 @@
 
 import { Suspense, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
+import { AppShell } from "@/components/AppShell";
+import { Card } from "@/components/ui/Card";
 
-function isProvider(value: string | null): value is "steam" | "google" {
-  return value === "steam" || value === "google";
+function isProvider(value: string | null): value is "steam" {
+  return value === "steam";
 }
 
 function isStatus(value: string | null): value is "connected" | "error" {
@@ -37,16 +39,20 @@ function AuthCompleteInner() {
 
   if (!valid || closeBlocked) {
     return (
-      <main className="flex min-h-screen items-center justify-center p-6">
-        <p className="text-sm text-slate-600">You can close this tab.</p>
-      </main>
+      <AppShell className="flex min-h-screen items-center justify-center">
+        <Card className="text-center">
+          <p className="text-sm text-muted">You can close this tab.</p>
+        </Card>
+      </AppShell>
     );
   }
 
   return (
-    <main className="flex min-h-screen items-center justify-center p-6">
-      <p className="text-sm text-slate-600">Completing sign-in...</p>
-    </main>
+    <AppShell className="flex min-h-screen items-center justify-center">
+      <Card className="text-center">
+        <p className="text-sm text-muted">Completing sign-in...</p>
+      </Card>
+    </AppShell>
   );
 }
 
@@ -54,9 +60,11 @@ export default function AuthCompletePage() {
   return (
     <Suspense
       fallback={
-        <main className="flex min-h-screen items-center justify-center p-6">
-          <p className="text-sm text-slate-600">Completing sign-in...</p>
-        </main>
+        <AppShell className="flex min-h-screen items-center justify-center">
+          <Card className="text-center">
+            <p className="text-sm text-muted">Completing sign-in...</p>
+          </Card>
+        </AppShell>
       }
     >
       <AuthCompleteInner />

@@ -26,21 +26,11 @@ Set in **Project Settings → Environment Variables**:
 | `SESSION_SECRET` | Required | Required | `openssl rand -hex 32` — unique per environment |
 | `APP_BASE_URL` | `https://<your-domain>` | Preview URL | No trailing slash |
 | `STEAM_REALM` | Same as `APP_BASE_URL` | Same as preview URL | |
-| `GOOGLE_CLIENT_ID` | From GCP | From GCP | |
-| `GOOGLE_CLIENT_SECRET` | From GCP | From GCP | |
 | `STEAM_WEB_API_KEY` | Optional | Optional | Improves wishlist reliability |
 
-## OAuth configuration
+No Google Cloud or OAuth credentials are required.
 
-### Google Cloud Console
-
-1. Enable **Google Calendar API**.
-2. OAuth client type: **Web application**.
-3. Authorized redirect URIs:
-   - `https://<production-domain>/api/google/callback`
-   - `https://<preview-deployment>.vercel.app/api/google/callback` (per preview, or wildcard if supported)
-
-### Steam
+## Steam configuration
 
 - `APP_BASE_URL` and `STEAM_REALM` must match the live site URL.
 - Wishlist must be **public**.
@@ -50,9 +40,8 @@ Set in **Project Settings → Environment Variables**:
 - [ ] Home page loads over HTTPS
 - [ ] Steam sign-in popup completes and closes; main tab shows connected state
 - [ ] Wishlist stream loads games
-- [ ] Google connect works on production URL
-- [ ] Calendar event creation succeeds (Calendar API enabled)
-- [ ] `.ics` download works
+- [ ] Per-game **Add to Google Calendar** links open pre-filled events
+- [ ] `.ics` download works and imports into a calendar app
 
 ## Branch protection
 
@@ -63,5 +52,4 @@ See [`.github/BRANCH_PROTECTION.md`](.github/BRANCH_PROTECTION.md) to require CI
 After adding a custom domain in Vercel:
 
 1. Update `APP_BASE_URL` and `STEAM_REALM` to the custom domain.
-2. Add the custom domain Google OAuth redirect URI.
-3. Redeploy.
+2. Redeploy.

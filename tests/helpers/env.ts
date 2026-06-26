@@ -5,8 +5,6 @@ export const TEST_ENV = {
   SESSION_SECRET: TEST_SESSION_SECRET,
   APP_BASE_URL: "http://localhost:3000",
   STEAM_REALM: "http://localhost:3000",
-  GOOGLE_CLIENT_ID: "test-google-client-id",
-  GOOGLE_CLIENT_SECRET: "test-google-client-secret",
 } as const;
 
 export function applyTestEnv() {

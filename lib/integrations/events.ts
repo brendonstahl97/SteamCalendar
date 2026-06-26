@@ -11,13 +11,19 @@ export function gameToEvent(game: WishlistGame): EventTarget | null {
   };
 }
 
-export function toGoogleEventPayload(event: EventTarget) {
-  return {
-    summary: event.title,
-    description: event.description,
-    start: { date: event.date },
-    end: { date: event.date },
-  };
+const GOOGLE_CALENDAR_TEMPLATE_BASE =
+  "https://calendar.google.com/calendar/render?action=TEMPLATE";
+
+const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+const MAX_TEMPLATE_DETAILS_LENGTH = 800;
+
+function isValidIsoDate(date: string): boolean {
+  if (!ISO_DATE_RE.test(date)) {
+    return false;
+  }
+  const parsed = new Date(`${date}T00:00:00.000Z`);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === date;
 }
 
 function formatDateForICS(date: string) {
@@ -28,6 +34,26 @@ function nextDay(date: string) {
   const d = new Date(`${date}T00:00:00.000Z`);
   d.setUTCDate(d.getUTCDate() + 1);
   return d.toISOString().slice(0, 10);
+}
+
+export function toGoogleCalendarTemplateUrl(event: EventTarget): string | null {
+  if (!isValidIsoDate(event.date)) {
+    return null;
+  }
+
+  const startDay = formatDateForICS(event.date);
+  const endDay = formatDateForICS(nextDay(event.date));
+  const details =
+    event.description.length > MAX_TEMPLATE_DETAILS_LENGTH
+      ? event.description.slice(0, MAX_TEMPLATE_DETAILS_LENGTH)
+      : event.description;
+
+  const params = new URLSearchParams();
+  params.set("text", event.title);
+  params.set("dates", `${startDay}/${endDay}`);
+  params.set("details", details);
+
+  return `${GOOGLE_CALENDAR_TEMPLATE_BASE}&${params.toString()}`;
 }
 
 function escapeICS(text: string): string {
