@@ -7,9 +7,6 @@ const SESSION_COOKIE = "swc_session";
 export type SessionData = {
   steamId?: string;
   steamConnected?: boolean;
-  googleConnected?: boolean;
-  googleAccessToken?: string;
-  googleTokenExpiresAt?: number;
   oauthStates?: Record<string, string>;
 };
 

@@ -10,7 +10,6 @@ describe("session crypto", () => {
   const sample: SessionData = {
     steamConnected: true,
     steamId: "76561198000000000",
-    googleConnected: false,
   };
 
   it("roundtrips session data", () => {

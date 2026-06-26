@@ -16,7 +16,7 @@ describe("getEnv", () => {
   });
 
   it("throws when a required variable is missing", () => {
-    delete process.env.GOOGLE_CLIENT_SECRET;
+    delete process.env.STEAM_REALM;
     expect(() => getEnv()).toThrow("Missing required environment variable");
   });
 

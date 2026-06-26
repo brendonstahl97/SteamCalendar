@@ -2,8 +2,6 @@ const requiredEnv = [
   "SESSION_SECRET",
   "APP_BASE_URL",
   "STEAM_REALM",
-  "GOOGLE_CLIENT_ID",
-  "GOOGLE_CLIENT_SECRET",
 ] as const;
 
 type EnvKey = (typeof requiredEnv)[number];
